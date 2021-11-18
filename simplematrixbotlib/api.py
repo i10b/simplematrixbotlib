@@ -1,5 +1,5 @@
 import asyncio
-from nio import (AsyncClient, SyncResponse, RoomMessageText)
+from nio import (AsyncClient, SyncResponse, RoomMessageText, AsyncClientConfig)
 from PIL import Image
 import aiofiles.os
 import mimetypes
@@ -46,28 +46,40 @@ class Api:
         if not (self.creds.password or self.creds.login_token or self.creds.access_token):
             raise ValueError("Missing password, login token, access token. Either password, login token or access token must be provided")
 
-        self.async_client = AsyncClient(homeserver=self.creds.homeserver, user=self.creds.username, device_id=self.creds.device_id)
+        clientConfig = AsyncClientConfig(max_limit_exceeded=0,
+                                         max_timeouts=0,
+                                         store_sync_tokens=True,
+                                         encryption_enabled=True,)
+        STORE_PATH = "./store/"
+        if not os.path.exists(STORE_PATH):
+            os.makedirs(STORE_PATH)
+        self.async_client = AsyncClient(homeserver=self.creds.homeserver, user=self.creds.username, device_id=self.creds.device_id, store_path=STORE_PATH, config=clientConfig)
 
-        if self.creds.password:
-            resp = await self.async_client.login(password=self.creds.password,  device_name=self.creds.device_name)
-
-        elif self.creds.access_token:
+        if self.creds.access_token:
             self.async_client.access_token = self.creds.access_token
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(f'https://matrix.org/_matrix/client/r0/account/whoami?access_token={self.creds.access_token}') as response:
                     device_id = ast.literal_eval((await response.text()).replace(":false,", ":\"false\","))['device_id']
                     user_id = ast.literal_eval((await response.text()).replace(":false,", ":\"false\","))['user_id']
-            
+
             self.async_client.device_id, self.creds.device_id = device_id, device_id
             self.async_client.user_id, self.creds.user_id = user_id, user_id
             resp = None
+
+            self.async_client.load_store()
+
+        elif self.creds.password:
+            resp = await self.async_client.login(password=self.creds.password,  device_name=self.creds.device_name)
 
         elif self.creds.login_token:
             resp = await self.async_client.login(token=self.creds.login_token,  device_name=self.creds.device_name)
         
         if isinstance(resp, nio.responses.LoginError):
             raise Exception(resp)
+
+        if self.async_client.should_upload_keys:
+            await self.async_client.keys_upload()
 
 
     async def send_text_message(self, room_id, message):
@@ -166,6 +178,7 @@ class Api:
                                               "org.matrix.custom.html",
                                               "formatted_body":
                                               markdown.markdown(message)
-                                          })
+                                          },
+                                          ignore_unverified_devices=True)
 
 
